@@ -31,7 +31,7 @@ The following steps have been tested with `CUDA Version: 12.4`.
 
 1. Clone this repository and navigate to pi06 directory:
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/nahidalam/pi06
    cd pi06
    ```
 
