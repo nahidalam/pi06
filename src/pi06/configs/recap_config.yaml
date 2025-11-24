@@ -6,8 +6,8 @@ model:
   vision_model_name: "openai/clip-vit-base-patch32"
   text_model_name: "bert-base-uncased"
   hidden_dim: 512
-  freeze_vision: false
-  freeze_text: false
+  freeze_vision: true
+  freeze_text: true
   use_advantage_conditioning: true
   use_quality_conditioning: true
 
