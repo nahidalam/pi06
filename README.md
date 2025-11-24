@@ -81,36 +81,14 @@ The following steps have been tested with `CUDA Version: 12.4`.
 
 ### Changing Tokenizers
 
-You can easily change tokenizers by modifying the config:
+You can change tokenizers by modifying the config:
 
 ```yaml
 tokenizer:
-  text_model_name: "distilbert-base-uncased"  # Change text tokenizer
-  vision_model_name: "openai/clip-vit-large-patch14"  # Change vision tokenizer
+  text_model_name: "distilbert-base-uncased"  
+  vision_model_name: "openai/clip-vit-large-patch14"  
 ```
 
-Or programmatically:
-
-```python
-from pi06 import TokenizerWrapper
-
-tokenizer = TokenizerWrapper()
-tokenizer.set_text_tokenizer("distilbert-base-uncased")
-tokenizer.set_vision_processor("openai/clip-vit-large-patch14")
-```
-
-### Dataset Format
-
-The implementation expects Lerobot v3 format with the following structure:
-
-- **Images**: Multi-modal image observations (can have multiple camera views)
-- **Text**: Language instructions/commands
-- **Actions**: Robot actions
-- **Rewards**: Task rewards
-- **Done flags**: Episode termination flags
-- **Episode metadata**: Episode type (demo/correction/autonomous)
-
-See [Lerobot Dataset v3 documentation](https://huggingface.co/docs/lerobot/en/lerobot-dataset-v3) for details.
 
 ## Architecture
 
@@ -120,7 +98,7 @@ See [Lerobot Dataset v3 documentation](https://huggingface.co/docs/lerobot/en/le
 - **Language Encoder**: HuggingFace transformer (configurable)
 - **Fusion Layer**: Combines vision and language features
 - **Action Expert**: MLP head for action prediction
-- **Conditioning**: Supports advantage and quality conditioning
+- **Conditioning**: Supports advantage conditioning
 
 ### Value Function
 
