@@ -1,0 +1,70 @@
+# Recap Training Configuration
+
+# Model configuration
+model:
+  action_dim: 7  # Adjust based on your robot's action space
+  vision_model_name: "openai/clip-vit-base-patch32"
+  text_model_name: "bert-base-uncased"
+  hidden_dim: 512
+  freeze_vision: false
+  freeze_text: false
+  use_advantage_conditioning: true
+  use_quality_conditioning: true
+
+# Tokenizer configuration
+tokenizer:
+  text_model_name: "bert-base-uncased"  # Can be changed to any HuggingFace model
+  vision_model_name: "openai/clip-vit-base-patch32"  # Can be changed to other CLIP models
+
+# Value function configuration
+value_function:
+  input_dim: 512  # Should match model.hidden_dim
+  hidden_dims: [512, 256]
+  activation: "gelu"
+  output_type: "scalar"  # "scalar" or "distribution"
+  num_bins: 255  # Only used if output_type is "distribution"
+
+# Dataset configuration
+dataset:
+  path: "path/to/lerobot/dataset"  # Path to Lerobot v3 dataset
+  batch_size: 1  # Usually 1 for episodes, but can batch multiple
+  num_workers: 0
+  image_keys: ["image"]  # List of image observation keys
+  text_key: "instruction"
+  action_key: "action"
+  reward_key: "reward"
+  done_key: "done"
+
+# Training configuration
+training:
+  # Learning rates
+  learning_rate: 1e-4
+  value_lr: 1e-4
+  weight_decay: 0.0
+  
+  # Training stages
+  train_demonstrations: true
+  train_corrections: true
+  train_autonomous: true
+  
+  # Number of epochs for each stage
+  demo_epochs: 10
+  correction_epochs: 5
+  autonomous_epochs: 20
+  
+  # RL hyperparameters (for autonomous training)
+  gamma: 0.99  # Discount factor
+  lambda: 0.95  # GAE lambda
+  value_loss_weight: 0.5
+  policy_loss_weight: 1.0
+  entropy_weight: 0.01
+  
+  # Logging
+  use_wandb: true
+  wandb_project: "recap"
+  wandb_name: null  # Will use default if null
+  log_every: 100
+  
+  # Checkpointing
+  checkpoint_dir: "./checkpoints"
+
