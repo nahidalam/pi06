@@ -79,15 +79,6 @@ The following steps have been tested with `CUDA Version: 12.4`.
    python -m pi06.train --config pi06/configs/recap_config.yaml
    ```
 
-### Changing Tokenizers
-
-You can change tokenizers by modifying the config:
-
-```yaml
-tokenizer:
-  text_model_name: "distilbert-base-uncased"  
-  vision_model_name: "openai/clip-vit-large-patch14"  
-```
 
 
 ## Architecture
