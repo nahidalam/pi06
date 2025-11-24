@@ -1,14 +1,14 @@
-# RECAP: RL with Experience & Corrections via Advantage-conditioned Policies
+# Unofficial implementation of Physical Intelligence π*0.6 
 
-**⚠️ Note: This is an unofficial, work-in-progress implementation.**
+
+**⚠️ Work-in-progress implementation**
 
 PyTorch implementation of RECAP based on the Physical Intelligence blog post: [π*0.6: a VLA that Learns from Experience](https://www.physicalintelligence.company/blog/pistar06)
 
-This project is not affiliated with Physical Intelligence and is provided as-is for research purposes.
 
 ## Overview
 
-RECAP implements a three-stage training process for Vision-Language-Action (VLA) models:
+RECAP: RL with Experience & Corrections via Advantage-conditioned Policies. RECAP implements a three-stage training process for Vision-Language-Action (VLA) models:
 
 1. **Demonstrations**: Supervised learning from expert demonstrations
 2. **Corrections**: Learning from expert interventions when the robot makes mistakes
@@ -178,5 +178,5 @@ python -m pi06.train --config src/pi06/configs/recap_config.yaml --checkpoint ch
 
 ## License
 
-This implementation is provided as-is for research purposes.
+This project is not affiliated with Physical Intelligence and is provided as-is for research purposes.
 
