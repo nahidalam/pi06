@@ -136,15 +136,30 @@ class LerobotDatasetV21(Dataset):
         # Discover episode files
         self.episode_files = self._discover_episodes()
         
-        # Filter by episode type
+        # Filter by episode type (if metadata has episode type info)
         if episode_type != "all":
-            self.episode_files = [
-                ep_file for ep_file in self.episode_files
-                if self._get_episode_type(ep_file) == episode_type
-            ]
+            # Check if any episodes have episode_type metadata
+            has_episode_type_metadata = any(
+                self._get_episode_type(ep_file) != "all" 
+                for ep_file in self.episode_files
+            )
+            
+            if has_episode_type_metadata:
+                # Filter only if metadata has episode type information
+                filtered_files = [
+                    ep_file for ep_file in self.episode_files
+                    if self._get_episode_type(ep_file) == episode_type
+                ]
+                if len(filtered_files) > 0:
+                    self.episode_files = filtered_files
+                else:
+                    print(f"Warning: No episodes found with type '{episode_type}'. Using all episodes.")
+            else:
+                # If no episode type metadata, use all episodes
+                print(f"Warning: Dataset doesn't have episode_type metadata. Using all episodes for '{episode_type}' stage.")
         
         if len(self.episode_files) == 0:
-            raise ValueError(f"No episodes found for type '{episode_type}' in {dataset_path}")
+            raise ValueError(f"No episode files found in {dataset_path}")
     
     def _download_huggingface_dataset(self, dataset_name: str) -> Path:
         """
