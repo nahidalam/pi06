@@ -108,6 +108,11 @@ class RecapTrainer:
                     text_inputs = {k: v.to(self.device) for k, v in text_inputs.items()}
                 
                 # Get images
+                if batch["images"] is None or len(batch["images"]) == 0:
+                    raise ValueError(
+                        "No images found in batch. Check that video files exist in the dataset. "
+                        f"Expected structure: <dataset_path>/videos/<chunk_id>/<image_key>/*.mp4"
+                    )
                 images = batch["images"][list(batch["images"].keys())[0]]  # Use first image key
                 images = images.to(self.device)
                 

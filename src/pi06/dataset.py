@@ -133,6 +133,29 @@ class LerobotDatasetV21(Dataset):
         # Load metadata
         self.metadata = self._load_metadata()
         
+        # Auto-detect available image keys if not specified or if they don't exist
+        available_image_keys = self._discover_image_keys()
+        if available_image_keys:
+            if self.image_keys and self.image_keys != ["observation.images.main"]:
+                # Check if specified keys exist
+                missing_keys = [k for k in self.image_keys if k not in available_image_keys]
+                if missing_keys:
+                    print(f"Warning: Specified image keys {missing_keys} not found. Available keys: {available_image_keys}")
+                    # Use only the keys that exist
+                    self.image_keys = [k for k in self.image_keys if k in available_image_keys]
+                    if not self.image_keys:
+                        print(f"Using auto-detected image keys: {available_image_keys}")
+                        self.image_keys = available_image_keys
+            else:
+                # Use auto-detected keys
+                self.image_keys = available_image_keys
+                print(f"Auto-detected image keys: {self.image_keys}")
+        elif not self.image_keys:
+            raise ValueError(
+                f"No image keys found in videos directory. "
+                f"Expected structure: {self.dataset_path}/videos/{self.chunk_id}/<image_key>/"
+            )
+        
         # Discover episode files
         self.episode_files = self._discover_episodes()
         
@@ -224,6 +247,55 @@ class LerobotDatasetV21(Dataset):
         
         return metadata
     
+    def _discover_image_keys(self) -> List[str]:
+        """Auto-discover available image keys from videos directory structure.
+        
+        Supports two structures:
+        1. videos/<image_key>/<chunk_id>/file-*.mp4 (Lerobot v2.1 format)
+        2. videos/<chunk_id>/<image_key>/file-*.mp4 (alternative format)
+        """
+        videos_dir = self.dataset_path / "videos"
+        
+        if not videos_dir.exists():
+            return []
+        
+        image_keys = []
+        
+        # Try structure 1: videos/<image_key>/<chunk_id>/file-*.mp4
+        for item in videos_dir.iterdir():
+            if item.is_dir():
+                # Check if this directory contains chunk directories
+                chunk_dir = item / self.chunk_id
+                if chunk_dir.exists():
+                    # Check if chunk directory contains video files
+                    video_files = list(chunk_dir.glob("*.mp4"))
+                    if len(video_files) > 0:
+                        image_keys.append(item.name)
+        
+        # If no keys found, try structure 2: videos/<chunk_id>/<image_key>/file-*.mp4
+        if not image_keys:
+            chunk_videos_dir = videos_dir / self.chunk_id
+            if chunk_videos_dir.exists():
+                for item in chunk_videos_dir.iterdir():
+                    if item.is_dir():
+                        video_files = list(item.glob("*.mp4"))
+                        if len(video_files) > 0:
+                            image_keys.append(item.name)
+        
+        # If still no keys, check if videos are directly in videos/ or videos/chunk_id/
+        if not image_keys:
+            video_files = list(videos_dir.glob("*.mp4"))
+            if len(video_files) > 0:
+                image_keys = ["images"]  # Default name
+            else:
+                chunk_videos_dir = videos_dir / self.chunk_id
+                if chunk_videos_dir.exists():
+                    video_files = list(chunk_videos_dir.glob("*.mp4"))
+                    if len(video_files) > 0:
+                        image_keys = ["images"]  # Default name
+        
+        return sorted(image_keys)
+    
     def _discover_episodes(self) -> List[Path]:
         """Discover all episode parquet files in data/chunk-*/."""
         data_dir = self.dataset_path / "data" / self.chunk_id
@@ -308,27 +380,69 @@ class LerobotDatasetV21(Dataset):
         return frames
     
     def _find_video_path(self, episode_idx: str, image_key: str) -> Optional[Path]:
-        """Find video file path for given episode and image key."""
-        # Convert image key to video directory name
-        # e.g., "observation.images.main" -> "observation.images.main"
-        video_dir = self.dataset_path / "videos" / self.chunk_id / image_key
+        """Find video file path for given episode and image key.
         
+        Supports two directory structures:
+        1. videos/<image_key>/<chunk_id>/file-*.mp4 (Lerobot v2.1 format)
+        2. videos/<chunk_id>/<image_key>/file-*.mp4 (alternative format)
+        """
+        # Try structure 1: videos/<image_key>/<chunk_id>/file-*.mp4 (Lerobot v2.1 format)
+        video_dir = self.dataset_path / "videos" / image_key / self.chunk_id
         if not video_dir.exists():
+            # Try structure 2: videos/<chunk_id>/<image_key>/file-*.mp4
+            video_dir = self.dataset_path / "videos" / self.chunk_id / image_key
+        
+        # Fallback to other possible structures
+        if not video_dir.exists():
+            possible_dirs = [
+                self.dataset_path / "videos" / image_key,
+                self.dataset_path / "videos" / self.chunk_id,
+                self.dataset_path / "videos",
+            ]
+            for possible_dir in possible_dirs:
+                if possible_dir.exists() and possible_dir.is_dir():
+                    video_dir = possible_dir
+                    break
+        
+        if not video_dir.exists() or not video_dir.is_dir():
             return None
         
-        # Try episode_*.mp4 naming convention first
-        video_file = video_dir / f"episode_{episode_idx}.mp4"
-        if video_file.exists():
-            return video_file
+        # Convert episode_idx to int for flexible matching
+        try:
+            episode_num = int(episode_idx)
+        except ValueError:
+            episode_num = None
         
-        # Try file-*.mp4 naming convention (Lerobot v2.1 format)
-        video_file = video_dir / f"file-{episode_idx}.mp4"
-        if video_file.exists():
-            return video_file
+        # Try multiple naming patterns
+        patterns = [
+            f"episode_{episode_idx}.mp4",
+            f"file-{episode_idx}.mp4",
+            f"episode_{episode_idx.zfill(6)}.mp4",  # Zero-padded to 6 digits
+            f"file-{episode_idx.zfill(6)}.mp4",
+            f"episode_{episode_idx.zfill(3)}.mp4",  # Zero-padded to 3 digits
+            f"file-{episode_idx.zfill(3)}.mp4",
+        ]
         
-        # Try matching any video file with the episode index
-        # Some datasets might have different naming patterns
-        for video_file in video_dir.glob(f"*{episode_idx}*.mp4"):
+        # If we have a numeric index, also try without leading zeros
+        if episode_num is not None:
+            patterns.extend([
+                f"episode_{episode_num}.mp4",
+                f"file-{episode_num}.mp4",
+            ])
+        
+        for pattern in patterns:
+            video_file = video_dir / pattern
+            if video_file.exists():
+                return video_file
+        
+        # Try glob pattern matching as last resort
+        # Match any file containing the episode index
+        if episode_num is not None:
+            for video_file in sorted(video_dir.glob(f"*{episode_num}*.mp4")):
+                return video_file
+        
+        # Try matching by zero-padded patterns
+        for video_file in sorted(video_dir.glob(f"*{episode_idx}*.mp4")):
             return video_file
         
         return None
@@ -353,10 +467,13 @@ class LerobotDatasetV21(Dataset):
         for image_key in self.image_keys:
             video_path = self._find_video_path(episode_idx, image_key)
             if video_path:
-                video_frames = self._load_video_frames(video_path, num_steps)
-                if self.transform:
-                    video_frames = self.transform(video_frames)
-                images[image_key] = video_frames
+                try:
+                    video_frames = self._load_video_frames(video_path, num_steps)
+                    if self.transform:
+                        video_frames = self.transform(video_frames)
+                    images[image_key] = video_frames
+                except Exception as e:
+                    print(f"Warning: Failed to load video {video_path}: {e}")
             else:
                 # Try loading from parquet if video not found
                 if image_key in df.columns:
@@ -372,6 +489,14 @@ class LerobotDatasetV21(Dataset):
                                 img = img.numpy()
                             frames.append(to_tensor(img))
                         images[image_key] = torch.stack(frames)
+        
+        # Ensure at least one image key is loaded
+        if not images:
+            raise ValueError(
+                f"No images loaded for episode {episode_idx}. "
+                f"Tried image keys: {self.image_keys}. "
+                f"Check if videos exist in {self.dataset_path}/videos/{self.chunk_id}/"
+            )
         
         # Get text instructions
         text = None
