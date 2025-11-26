@@ -345,27 +345,52 @@ class LerobotDatasetV21(Dataset):
         if not video_path.exists():
             raise FileNotFoundError(f"Video file not found: {video_path}")
         
+        # Try decord first, fallback to torchvision if it fails
         if self.use_decord:
-            # Using decord for faster video loading
-            vr = self.decord.VideoReader(str(video_path), ctx=self.decord.cpu(0))
-            total_frames = len(vr)
-            
-            # Sample frames evenly
-            if num_frames > total_frames:
-                frame_indices = list(range(total_frames))
-            else:
-                frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
-            
-            frames = []
-            for idx in frame_indices:
-                frame = vr[idx].asnumpy()  # Convert to numpy
-                frames.append(frame)
-            
-            # Convert to tensor: (T, H, W, C) -> (T, C, H, W)
-            frames = np.stack(frames)
-            frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
-        else:
-            # Fallback to torchvision VideoReader
+            try:
+                # Using decord for faster video loading
+                vr = self.decord.VideoReader(str(video_path), ctx=self.decord.cpu(0))
+                total_frames = len(vr)
+                
+                # Sample frames evenly
+                if num_frames > total_frames:
+                    frame_indices = list(range(total_frames))
+                else:
+                    frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+                
+                frames = []
+                for idx in frame_indices:
+                    frame = vr[idx].asnumpy()  # Convert to numpy
+                    frames.append(frame)
+                
+                # Convert to tensor: (T, H, W, C) -> (T, C, H, W)
+                frames = np.stack(frames)
+                frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
+                return frames
+            except Exception as e:
+                # Decord failed, fallback to torchvision
+                print(f"Warning: decord failed to load {video_path}, falling back to torchvision: {e}")
+                if not hasattr(self, 'torchvision_io'):
+                    try:
+                        import torchvision.io as tvio
+                        self.torchvision_io = tvio
+                    except ImportError:
+                        raise RuntimeError(
+                            f"Both decord and torchvision failed. "
+                            f"decord error: {e}. "
+                            f"Please ensure torchvision is installed: pip install torchvision"
+                        )
+        
+        # Use torchvision as fallback or primary method
+        if not hasattr(self, 'torchvision_io'):
+            try:
+                import torchvision.io as tvio
+                self.torchvision_io = tvio
+            except ImportError:
+                raise ImportError("Please install torchvision for video loading: pip install torchvision")
+        
+        # Fallback to torchvision VideoReader
+        try:
             video, audio, info = self.torchvision_io.read_video(str(video_path), output_format="TCHW")
             
             # Sample frames
@@ -376,8 +401,9 @@ class LerobotDatasetV21(Dataset):
                 frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
             
             frames = video[frame_indices].float() / 255.0
-        
-        return frames
+            return frames
+        except Exception as e:
+            raise RuntimeError(f"Failed to load video {video_path} with both decord and torchvision: {e}")
     
     def _find_video_path(self, episode_idx: str, image_key: str) -> Optional[Path]:
         """Find video file path for given episode and image key.
@@ -407,12 +433,9 @@ class LerobotDatasetV21(Dataset):
                         break
         
         if video_dir is None or not (video_dir.exists() and video_dir.is_dir()):
-            print(f"DEBUG _find_video_path: video_dir not found for episode_idx={episode_idx}, image_key={image_key}")
-            print(f"  Checked path1: {self.dataset_path / 'videos' / image_key / self.chunk_id} (exists: {(self.dataset_path / 'videos' / image_key / self.chunk_id).exists()})")
-            print(f"  Checked path2: {self.dataset_path / 'videos' / self.chunk_id / image_key} (exists: {(self.dataset_path / 'videos' / self.chunk_id / image_key).exists()})")
             return None
         
-        # List all video files in directory for debugging
+        # List all video files in directory
         all_files = list(video_dir.glob("*.mp4"))
         
         # Convert episode_idx to int for flexible matching
@@ -440,9 +463,7 @@ class LerobotDatasetV21(Dataset):
         
         for pattern in patterns:
             video_file = video_dir / pattern
-            print(f"DEBUG: Trying pattern {pattern} -> {video_file} (exists: {video_file.exists()})")
             if video_file.exists():
-                print(f"DEBUG: Found video file: {video_file}")
                 return video_file
         
         # Try glob pattern matching as last resort
@@ -454,10 +475,8 @@ class LerobotDatasetV21(Dataset):
                 f"*{episode_num}.mp4",
             ]
             for glob_pattern in glob_patterns:
-                print(f"DEBUG: Trying glob pattern: {glob_pattern}")
                 matches = sorted(video_dir.glob(glob_pattern))
                 if matches:
-                    print(f"DEBUG: Found video file via glob: {matches[0]}")
                     return matches[0]
         
         # Try matching by zero-padded patterns
@@ -467,24 +486,17 @@ class LerobotDatasetV21(Dataset):
             f"*{episode_idx}.mp4",
         ]
         for glob_pattern2 in glob_patterns2:
-            print(f"DEBUG: Trying glob pattern: {glob_pattern2}")
             matches = sorted(video_dir.glob(glob_pattern2))
             if matches:
-                print(f"DEBUG: Found video file via glob: {matches[0]}")
                 return matches[0]
         
         # Final fallback: list all video files and try to match by episode number
-        print(f"DEBUG: Pattern matching failed for episode_idx={episode_idx} in {video_dir}")
-        print(f"DEBUG: All files in directory: {[f.name for f in all_files]}")
-        
-        # Try to find any file that contains the episode number
         for video_file in all_files:
             # Extract number from filename and compare
             file_match = re.search(r'\d+', video_file.stem)
             if file_match:
                 file_num = file_match.group(0)
                 if file_num == episode_idx or file_num.lstrip('0') == episode_idx.lstrip('0'):
-                    print(f"DEBUG: Found video file by number matching: {video_file}")
                     return video_file
         
         return None
@@ -516,18 +528,8 @@ class LerobotDatasetV21(Dataset):
                     images[image_key] = video_frames
                 except Exception as e:
                     print(f"Warning: Failed to load video {video_path}: {e}")
+                    # Continue to try other image keys or parquet fallback
             else:
-                # Debug: print what paths were checked
-                path1 = self.dataset_path / "videos" / image_key / self.chunk_id
-                path2 = self.dataset_path / "videos" / self.chunk_id / image_key
-                print(f"Debug: Video not found for episode_idx={episode_idx}, image_key={image_key}")
-                print(f"  Checked: {path1} (exists: {path1.exists()})")
-                print(f"  Checked: {path2} (exists: {path2.exists()})")
-                if path1.exists():
-                    print(f"  Files in {path1}: {list(path1.glob('*.mp4'))}")
-                if path2.exists():
-                    print(f"  Files in {path2}: {list(path2.glob('*.mp4'))}")
-                
                 # Try loading from parquet if video not found
                 if image_key in df.columns:
                     # If images are stored in parquet (less common)
