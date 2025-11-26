@@ -407,7 +407,13 @@ class LerobotDatasetV21(Dataset):
                         break
         
         if video_dir is None or not (video_dir.exists() and video_dir.is_dir()):
+            print(f"DEBUG _find_video_path: video_dir not found for episode_idx={episode_idx}, image_key={image_key}")
+            print(f"  Checked path1: {self.dataset_path / 'videos' / image_key / self.chunk_id} (exists: {(self.dataset_path / 'videos' / image_key / self.chunk_id).exists()})")
+            print(f"  Checked path2: {self.dataset_path / 'videos' / self.chunk_id / image_key} (exists: {(self.dataset_path / 'videos' / self.chunk_id / image_key).exists()})")
             return None
+        
+        # List all video files in directory for debugging
+        all_files = list(video_dir.glob("*.mp4"))
         
         # Convert episode_idx to int for flexible matching
         try:
@@ -415,37 +421,71 @@ class LerobotDatasetV21(Dataset):
         except ValueError:
             episode_num = None
         
-        # Try multiple naming patterns
+        # Try multiple naming patterns - prioritize file-* naming
         patterns = [
+            f"file-{episode_idx}.mp4",  # Most common: file-000.mp4
             f"episode_{episode_idx}.mp4",
-            f"file-{episode_idx}.mp4",
-            f"episode_{episode_idx.zfill(6)}.mp4",  # Zero-padded to 6 digits
-            f"file-{episode_idx.zfill(6)}.mp4",
-            f"episode_{episode_idx.zfill(3)}.mp4",  # Zero-padded to 3 digits
-            f"file-{episode_idx.zfill(3)}.mp4",
+            f"file-{episode_idx.zfill(3)}.mp4",  # Zero-padded to 3 digits
+            f"episode_{episode_idx.zfill(3)}.mp4",
+            f"file-{episode_idx.zfill(6)}.mp4",  # Zero-padded to 6 digits
+            f"episode_{episode_idx.zfill(6)}.mp4",
         ]
         
         # If we have a numeric index, also try without leading zeros
         if episode_num is not None:
             patterns.extend([
-                f"episode_{episode_num}.mp4",
                 f"file-{episode_num}.mp4",
+                f"episode_{episode_num}.mp4",
             ])
         
         for pattern in patterns:
             video_file = video_dir / pattern
+            print(f"DEBUG: Trying pattern {pattern} -> {video_file} (exists: {video_file.exists()})")
             if video_file.exists():
+                print(f"DEBUG: Found video file: {video_file}")
                 return video_file
         
         # Try glob pattern matching as last resort
         # Match any file containing the episode index
         if episode_num is not None:
-            for video_file in sorted(video_dir.glob(f"*{episode_num}*.mp4")):
-                return video_file
+            glob_patterns = [
+                f"*{episode_num}*.mp4",
+                f"file-{episode_num}*.mp4",
+                f"*{episode_num}.mp4",
+            ]
+            for glob_pattern in glob_patterns:
+                print(f"DEBUG: Trying glob pattern: {glob_pattern}")
+                matches = sorted(video_dir.glob(glob_pattern))
+                if matches:
+                    print(f"DEBUG: Found video file via glob: {matches[0]}")
+                    return matches[0]
         
         # Try matching by zero-padded patterns
-        for video_file in sorted(video_dir.glob(f"*{episode_idx}*.mp4")):
-            return video_file
+        glob_patterns2 = [
+            f"*{episode_idx}*.mp4",
+            f"file-{episode_idx}*.mp4",
+            f"*{episode_idx}.mp4",
+        ]
+        for glob_pattern2 in glob_patterns2:
+            print(f"DEBUG: Trying glob pattern: {glob_pattern2}")
+            matches = sorted(video_dir.glob(glob_pattern2))
+            if matches:
+                print(f"DEBUG: Found video file via glob: {matches[0]}")
+                return matches[0]
+        
+        # Final fallback: list all video files and try to match by episode number
+        print(f"DEBUG: Pattern matching failed for episode_idx={episode_idx} in {video_dir}")
+        print(f"DEBUG: All files in directory: {[f.name for f in all_files]}")
+        
+        # Try to find any file that contains the episode number
+        for video_file in all_files:
+            # Extract number from filename and compare
+            file_match = re.search(r'\d+', video_file.stem)
+            if file_match:
+                file_num = file_match.group(0)
+                if file_num == episode_idx or file_num.lstrip('0') == episode_idx.lstrip('0'):
+                    print(f"DEBUG: Found video file by number matching: {video_file}")
+                    return video_file
         
         return None
     
