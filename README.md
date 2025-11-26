@@ -50,7 +50,7 @@ The following steps have been tested with `CUDA Version: 12.4`.
 
 ## Usage
 
-### Basic Training
+### Training
 
 1. Prepare your Lerobot v3 dataset (or use an existing one)
 
@@ -72,11 +72,6 @@ The following steps have been tested with `CUDA Version: 12.4`.
 3. Run training:
    ```bash
    python -m pi06.train --config src/pi06/configs/recap_config.yaml
-   ```
-   
-   Or if the package is installed:
-   ```bash
-   python -m pi06.train --config pi06/configs/recap_config.yaml
    ```
 
 

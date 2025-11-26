@@ -21,6 +21,19 @@ def load_config(config_path: str) -> Dict:
     """Load configuration from YAML file."""
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
+    
+    # Convert numeric strings to floats if needed (handles YAML parsing inconsistencies)
+    if "training" in config:
+        training = config["training"]
+        # Ensure learning rates and other numeric values are floats
+        numeric_keys = [
+            "learning_rate", "value_lr", "weight_decay", "gamma", "lambda",
+            "value_loss_weight", "policy_loss_weight", "entropy_weight"
+        ]
+        for key in numeric_keys:
+            if key in training and training[key] is not None:
+                training[key] = float(training[key])
+    
     return config
 
 
