@@ -59,6 +59,9 @@ dev = [
 train = [
     # Training-specific dependencies can be added here
     # Example: "flash-attn>=2.6.3",  # Uncomment if needed
+    # Video loading alternatives (if decord/torchvision fail)
+    # "opencv-python>=4.8.0",  # Uncomment if needed
+    # "av>=10.0.0",  # PyAV for torchvision video support (uncomment if needed)
 ]
 
 [build-system]

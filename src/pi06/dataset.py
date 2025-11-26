@@ -368,42 +368,89 @@ class LerobotDatasetV21(Dataset):
                 frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
                 return frames
             except Exception as e:
-                # Decord failed, fallback to torchvision
-                print(f"Warning: decord failed to load {video_path}, falling back to torchvision: {e}")
-                if not hasattr(self, 'torchvision_io'):
-                    try:
-                        import torchvision.io as tvio
-                        self.torchvision_io = tvio
-                    except ImportError:
-                        raise RuntimeError(
-                            f"Both decord and torchvision failed. "
-                            f"decord error: {e}. "
-                            f"Please ensure torchvision is installed: pip install torchvision"
-                        )
+                # Decord failed, fallback to torchvision or OpenCV
+                print(f"Warning: decord failed to load {video_path}: {e}")
         
-        # Use torchvision as fallback or primary method
+        # Try torchvision as fallback
         if not hasattr(self, 'torchvision_io'):
             try:
                 import torchvision.io as tvio
                 self.torchvision_io = tvio
             except ImportError:
-                raise ImportError("Please install torchvision for video loading: pip install torchvision")
+                self.torchvision_io = None
         
-        # Fallback to torchvision VideoReader
+        if self.torchvision_io is not None:
+            try:
+                video, audio, info = self.torchvision_io.read_video(str(video_path), output_format="TCHW")
+                
+                # Sample frames
+                total_frames = video.shape[0]
+                if num_frames > total_frames:
+                    frame_indices = list(range(total_frames))
+                else:
+                    frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+                
+                frames = video[frame_indices].float() / 255.0
+                return frames
+            except Exception as e:
+                # torchvision failed (likely PyAV not installed), try OpenCV
+                print(f"Warning: torchvision failed to load {video_path}, trying OpenCV: {e}")
+        
+        # Final fallback: OpenCV
         try:
-            video, audio, info = self.torchvision_io.read_video(str(video_path), output_format="TCHW")
+            import cv2
+        except ImportError as import_err:
+            error_msg = (
+                f"All video loading methods failed. Please install one of:\n"
+                f"  - PyAV (for torchvision): pip install av\n"
+                f"  - OpenCV: pip install opencv-python\n"
+                f"  - Or fix decord installation\n"
+            )
+            if self.use_decord:
+                error_msg += f"decord failed, torchvision requires PyAV (not installed), and OpenCV is not installed."
+            else:
+                error_msg += f"torchvision requires PyAV (not installed), and OpenCV is not installed."
+            raise ImportError(error_msg) from import_err
+        
+        # Use OpenCV to load video
+        try:
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                raise RuntimeError(f"OpenCV could not open video file: {video_path}")
             
-            # Sample frames
-            total_frames = video.shape[0]
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Sample frames evenly
             if num_frames > total_frames:
                 frame_indices = list(range(total_frames))
             else:
                 frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
             
-            frames = video[frame_indices].float() / 255.0
+            frames = []
+            for idx in frame_indices:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(frame)
+            
+            cap.release()
+            
+            if len(frames) == 0:
+                raise RuntimeError(f"No frames could be read from video: {video_path}")
+            
+            # Convert to tensor: (T, H, W, C) -> (T, C, H, W)
+            frames = np.stack(frames)
+            frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
             return frames
+            
         except Exception as e:
-            raise RuntimeError(f"Failed to load video {video_path} with both decord and torchvision: {e}")
+            raise RuntimeError(
+                f"Failed to load video {video_path} with all methods (decord, torchvision, OpenCV). "
+                f"Last error: {e}"
+            )
     
     def _find_video_path(self, episode_idx: str, image_key: str) -> Optional[Path]:
         """Find video file path for given episode and image key.
