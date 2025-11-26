@@ -50,7 +50,7 @@ class LerobotDatasetV21(Dataset):
         Initialize Lerobot v2.1 dataset.
         
         Args:
-            dataset_path: Path to Lerobot dataset root directory
+            dataset_path: Path to Lerobot dataset root directory or HuggingFace dataset name (e.g., "lerobot/svla_so100_pickplace")
             episode_type: Type of episodes to load
             image_keys: List of image observation keys (e.g., ["observation.images.main", "observation.images.secondary_0"])
             text_key: Key for text instructions/commands
@@ -62,7 +62,44 @@ class LerobotDatasetV21(Dataset):
             transform: Optional transform to apply to images
             chunk_id: Chunk identifier (default: "chunk-000")
         """
-        self.dataset_path = Path(dataset_path)
+        # Check required dependencies first
+        try:
+            import pandas as pd
+            self.pd = pd
+        except ImportError:
+            raise ImportError("Please install pandas: pip install pandas pyarrow")
+        
+        # Check for huggingface_hub (for dataset downloading)
+        try:
+            from huggingface_hub import snapshot_download
+            self.snapshot_download = snapshot_download
+        except ImportError:
+            self.snapshot_download = None
+        
+        # Check if dataset_path is a HuggingFace dataset and download if needed
+        dataset_path_str = str(dataset_path)
+        dataset_path_obj = Path(dataset_path)
+        
+        # Detect HuggingFace dataset: contains '/' and doesn't exist as local path
+        is_hf_dataset = (
+            '/' in dataset_path_str and 
+            not dataset_path_obj.exists() and
+            not dataset_path_obj.is_absolute() and  # Not an absolute path
+            len(dataset_path_str.split('/')) == 2  # Format: "org/dataset_name"
+        )
+        
+        if is_hf_dataset:
+            # Likely a HuggingFace dataset (e.g., "lerobot/svla_so100_pickplace")
+            self.dataset_path = self._download_huggingface_dataset(dataset_path_str)
+        else:
+            self.dataset_path = dataset_path_obj
+            if not self.dataset_path.exists():
+                raise ValueError(
+                    f"Dataset path does not exist: {dataset_path}\n"
+                    f"If this is a HuggingFace dataset, make sure huggingface_hub is installed: "
+                    f"pip install huggingface_hub"
+                )
+        
         self.episode_type = episode_type
         self.image_keys = image_keys or ["observation.images.main"]
         self.text_key = text_key
@@ -73,13 +110,6 @@ class LerobotDatasetV21(Dataset):
         self.max_episode_length = max_episode_length
         self.transform = transform
         self.chunk_id = chunk_id
-        
-        # Check required dependencies
-        try:
-            import pandas as pd
-            self.pd = pd
-        except ImportError:
-            raise ImportError("Please install pandas: pip install pandas pyarrow")
         
         try:
             import decord
@@ -115,6 +145,52 @@ class LerobotDatasetV21(Dataset):
         
         if len(self.episode_files) == 0:
             raise ValueError(f"No episodes found for type '{episode_type}' in {dataset_path}")
+    
+    def _download_huggingface_dataset(self, dataset_name: str) -> Path:
+        """
+        Download a HuggingFace dataset and return the local cache path.
+        
+        Args:
+            dataset_name: HuggingFace dataset identifier (e.g., "lerobot/svla_so100_pickplace")
+        
+        Returns:
+            Path to the downloaded dataset directory
+        """
+        if self.snapshot_download is None:
+            raise ImportError(
+                "huggingface_hub is required for downloading HuggingFace datasets. "
+                "Install it with: pip install huggingface_hub"
+            )
+        
+        print(f"Downloading HuggingFace dataset: {dataset_name}")
+        print("This may take a while depending on the dataset size...")
+        
+        try:
+            # Download the dataset to cache
+            # By default, snapshot_download uses ~/.cache/huggingface/hub
+            cache_dir = self.snapshot_download(
+                repo_id=dataset_name,
+                repo_type="dataset",
+                local_files_only=False,  # Allow downloading
+            )
+            
+            cache_path = Path(cache_dir)
+            print(f"Dataset downloaded to: {cache_path}")
+            
+            # Verify the dataset structure
+            if not (cache_path / "data").exists():
+                raise ValueError(
+                    f"Downloaded dataset does not have expected structure. "
+                    f"Expected 'data' directory not found in {cache_path}"
+                )
+            
+            return cache_path
+            
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to download HuggingFace dataset '{dataset_name}': {e}\n"
+                f"Make sure you have access to the dataset and have installed huggingface_hub."
+            )
     
     def _load_metadata(self) -> Dict:
         """Load metadata from meta/episodes.jsonl."""

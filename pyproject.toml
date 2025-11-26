@@ -31,6 +31,7 @@ dependencies = [
     # Dataset handling - Lerobot v2.1 format
     "pandas>=2.0.0",
     "pyarrow>=12.0.0",
+    "huggingface-hub>=0.20.0",
     
     # Video loading
     "decord>=0.6.0",
