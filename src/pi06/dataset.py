@@ -216,18 +216,26 @@ class LerobotDatasetV21(Dataset):
         if not data_dir.exists():
             raise ValueError(f"Data directory not found: {data_dir}")
         
-        # Find all episode parquet files
+        # Find all episode parquet files - support both naming conventions
         episode_files = sorted(data_dir.glob("episode_*.parquet"))
         
+        # If no episode_*.parquet files found, try file-*.parquet (Lerobot v2.1 format)
         if len(episode_files) == 0:
-            raise ValueError(f"No episode files found in {data_dir}")
+            episode_files = sorted(data_dir.glob("file-*.parquet"))
+        
+        if len(episode_files) == 0:
+            raise ValueError(
+                f"No episode files found in {data_dir}. "
+                f"Expected files matching 'episode_*.parquet' or 'file-*.parquet'"
+            )
         
         return episode_files
     
     def _get_episode_type(self, episode_file: Path) -> str:
         """Get episode type from metadata or filename."""
-        # Extract episode index from filename (e.g., episode_000000.parquet -> 000000)
-        match = re.search(r'episode_(\d+)', episode_file.name)
+        # Extract episode index from filename
+        # Support both episode_*.parquet and file-*.parquet naming conventions
+        match = re.search(r'(?:episode_|file-)(\d+)', episode_file.name)
         if match:
             ep_idx = match.group(1)
             if ep_idx in self.metadata:
@@ -293,9 +301,19 @@ class LerobotDatasetV21(Dataset):
         if not video_dir.exists():
             return None
         
-        # Find matching video file
+        # Try episode_*.mp4 naming convention first
         video_file = video_dir / f"episode_{episode_idx}.mp4"
         if video_file.exists():
+            return video_file
+        
+        # Try file-*.mp4 naming convention (Lerobot v2.1 format)
+        video_file = video_dir / f"file-{episode_idx}.mp4"
+        if video_file.exists():
+            return video_file
+        
+        # Try matching any video file with the episode index
+        # Some datasets might have different naming patterns
+        for video_file in video_dir.glob(f"*{episode_idx}*.mp4"):
             return video_file
         
         return None
@@ -307,8 +325,8 @@ class LerobotDatasetV21(Dataset):
         """Get a single episode."""
         episode_file = self.episode_files[idx]
         
-        # Extract episode index from filename
-        match = re.search(r'episode_(\d+)', episode_file.name)
+        # Extract episode index from filename - support both naming conventions
+        match = re.search(r'(?:episode_|file-)(\d+)', episode_file.name)
         episode_idx = match.group(1) if match else str(idx).zfill(6)
         
         # Load episode data from parquet
@@ -386,8 +404,18 @@ class LerobotDatasetV21(Dataset):
             "episode_length": num_steps,
         }
         
+        # Try to find metadata with flexible key matching
+        # Try exact match first, then try without leading zeros, then as integer
+        ep_meta = None
         if episode_idx in self.metadata:
             ep_meta = self.metadata[episode_idx]
+        else:
+            # Try without leading zeros
+            episode_idx_int = str(int(episode_idx)) if episode_idx.isdigit() else episode_idx
+            if episode_idx_int in self.metadata:
+                ep_meta = self.metadata[episode_idx_int]
+        
+        if ep_meta:
             metadata["episode_type"] = ep_meta.get("episode_type", "all")
             metadata.update(ep_meta)
         
