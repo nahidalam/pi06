@@ -388,23 +388,25 @@ class LerobotDatasetV21(Dataset):
         """
         # Try structure 1: videos/<image_key>/<chunk_id>/file-*.mp4 (Lerobot v2.1 format)
         video_dir = self.dataset_path / "videos" / image_key / self.chunk_id
-        if not video_dir.exists():
+        
+        if not (video_dir.exists() and video_dir.is_dir()):
             # Try structure 2: videos/<chunk_id>/<image_key>/file-*.mp4
             video_dir = self.dataset_path / "videos" / self.chunk_id / image_key
+            
+            # Fallback to other possible structures only if structure 2 doesn't exist
+            if not (video_dir.exists() and video_dir.is_dir()):
+                possible_dirs = [
+                    self.dataset_path / "videos" / image_key,
+                    self.dataset_path / "videos" / self.chunk_id,
+                    self.dataset_path / "videos",
+                ]
+                video_dir = None
+                for possible_dir in possible_dirs:
+                    if possible_dir.exists() and possible_dir.is_dir():
+                        video_dir = possible_dir
+                        break
         
-        # Fallback to other possible structures
-        if not video_dir.exists():
-            possible_dirs = [
-                self.dataset_path / "videos" / image_key,
-                self.dataset_path / "videos" / self.chunk_id,
-                self.dataset_path / "videos",
-            ]
-            for possible_dir in possible_dirs:
-                if possible_dir.exists() and possible_dir.is_dir():
-                    video_dir = possible_dir
-                    break
-        
-        if not video_dir.exists() or not video_dir.is_dir():
+        if video_dir is None or not (video_dir.exists() and video_dir.is_dir()):
             return None
         
         # Convert episode_idx to int for flexible matching
@@ -466,7 +468,7 @@ class LerobotDatasetV21(Dataset):
         images = {}
         for image_key in self.image_keys:
             video_path = self._find_video_path(episode_idx, image_key)
-            if video_path:
+            if video_path and video_path.exists():
                 try:
                     video_frames = self._load_video_frames(video_path, num_steps)
                     if self.transform:
@@ -475,6 +477,17 @@ class LerobotDatasetV21(Dataset):
                 except Exception as e:
                     print(f"Warning: Failed to load video {video_path}: {e}")
             else:
+                # Debug: print what paths were checked
+                path1 = self.dataset_path / "videos" / image_key / self.chunk_id
+                path2 = self.dataset_path / "videos" / self.chunk_id / image_key
+                print(f"Debug: Video not found for episode_idx={episode_idx}, image_key={image_key}")
+                print(f"  Checked: {path1} (exists: {path1.exists()})")
+                print(f"  Checked: {path2} (exists: {path2.exists()})")
+                if path1.exists():
+                    print(f"  Files in {path1}: {list(path1.glob('*.mp4'))}")
+                if path2.exists():
+                    print(f"  Files in {path2}: {list(path2.glob('*.mp4'))}")
+                
                 # Try loading from parquet if video not found
                 if image_key in df.columns:
                     # If images are stored in parquet (less common)
@@ -492,10 +505,19 @@ class LerobotDatasetV21(Dataset):
         
         # Ensure at least one image key is loaded
         if not images:
+            # Build helpful error message with actual paths checked
+            checked_paths = []
+            for image_key in self.image_keys:
+                path1 = self.dataset_path / "videos" / image_key / self.chunk_id
+                path2 = self.dataset_path / "videos" / self.chunk_id / image_key
+                checked_paths.append(f"  - {path1}")
+                checked_paths.append(f"  - {path2}")
+            
             raise ValueError(
                 f"No images loaded for episode {episode_idx}. "
                 f"Tried image keys: {self.image_keys}. "
-                f"Check if videos exist in {self.dataset_path}/videos/{self.chunk_id}/"
+                f"Checked paths:\n" + "\n".join(checked_paths) + "\n"
+                f"Expected video file pattern: file-{episode_idx}.mp4 or episode_{episode_idx}.mp4"
             )
         
         # Get text instructions
