@@ -1,10 +1,16 @@
 """
-Lerobot Dataset v3 Loader for Recap Training
+Lerobot Dataset v2.1 Loader for Recap Training
 
-Handles loading and preprocessing of Lerobot dataset v3 format for:
+Handles loading and preprocessing of Lerobot dataset v2.1 format for:
 - Demonstrations (supervised learning)
 - Corrections (expert interventions)
 - Autonomous episodes (RL training)
+
+Dataset v2.1 structure:
+<dataset_name>/
+├── data/chunk-000/episode_*.parquet
+├── videos/chunk-000/observation.images.*/episode_*.mp4
+└── meta/episodes.jsonl
 """
 
 import torch
@@ -13,16 +19,17 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 from pathlib import Path
 import json
+import re
 
 
-class LerobotDatasetV3(Dataset):
+class LerobotDatasetV21(Dataset):
     """
-    Dataset loader for Lerobot v3 format.
+    Dataset loader for Lerobot v2.1 format.
     
-    Lerobot v3 format structure:
-    - Each episode is stored with observations, actions, rewards, etc.
-    - Supports multi-modal data (images, text, proprioception)
-    - Includes metadata about episode type (demo, correction, autonomous)
+    Lerobot v2.1 format structure:
+    - Episodes stored as parquet files in data/chunk-*/episode_*.parquet
+    - Videos stored as MP4 files in videos/chunk-*/observation.images.*/episode_*.mp4
+    - Metadata in meta/episodes.jsonl
     """
     
     def __init__(
@@ -37,14 +44,15 @@ class LerobotDatasetV3(Dataset):
         advantage_key: Optional[str] = None,  # For precomputed advantages
         max_episode_length: Optional[int] = None,
         transform=None,
+        chunk_id: str = "chunk-000",  # Which chunk to load
     ):
         """
-        Initialize Lerobot v3 dataset.
+        Initialize Lerobot v2.1 dataset.
         
         Args:
-            dataset_path: Path to Lerobot dataset (HuggingFace dataset or local path)
+            dataset_path: Path to Lerobot dataset root directory
             episode_type: Type of episodes to load
-            image_keys: List of image observation keys (e.g., ["image", "image_0", "image_1"])
+            image_keys: List of image observation keys (e.g., ["observation.images.main", "observation.images.secondary_0"])
             text_key: Key for text instructions/commands
             action_key: Key for actions
             reward_key: Key for rewards
@@ -52,10 +60,11 @@ class LerobotDatasetV3(Dataset):
             advantage_key: Key for precomputed advantages (optional)
             max_episode_length: Maximum episode length to use
             transform: Optional transform to apply to images
+            chunk_id: Chunk identifier (default: "chunk-000")
         """
         self.dataset_path = Path(dataset_path)
         self.episode_type = episode_type
-        self.image_keys = image_keys or ["image"]
+        self.image_keys = image_keys or ["observation.images.main"]
         self.text_key = text_key
         self.action_key = action_key
         self.reward_key = reward_key
@@ -63,141 +72,248 @@ class LerobotDatasetV3(Dataset):
         self.advantage_key = advantage_key
         self.max_episode_length = max_episode_length
         self.transform = transform
+        self.chunk_id = chunk_id
         
-        # Try to load from HuggingFace datasets first
+        # Check required dependencies
         try:
-            from datasets import load_from_disk, load_dataset
-            if self.dataset_path.exists() and self.dataset_path.is_dir():
-                self.data = load_from_disk(str(self.dataset_path))
-            elif isinstance(self.dataset_path, str) and '/' in str(self.dataset_path):
-                # Assume it's a HuggingFace dataset name (e.g., "username/dataset_name")
-                self.data = load_dataset(str(self.dataset_path))
-            else:
-                # Try loading as HuggingFace dataset name
-                self.data = load_dataset(str(self.dataset_path))
+            import pandas as pd
+            self.pd = pd
         except ImportError:
-            raise ImportError("Please install datasets: pip install datasets")
-        except Exception as e:
-            raise ValueError(f"Could not load dataset from {dataset_path}: {e}")
+            raise ImportError("Please install pandas: pip install pandas pyarrow")
         
-        # Filter episodes by type if specified
-        if episode_type != "all":
-            if "episode_type" in self.data.column_names:
-                self.data = self.data.filter(lambda x: x["episode_type"] == episode_type)
+        try:
+            import decord
+            self.decord = decord
+            try:
+                self.decord.bridge.set_bridge("torch")
+            except:
+                # If bridge setting fails, continue without it
+                pass
+            self.use_decord = True
+        except ImportError:
+            try:
+                import torchvision.io as tvio
+                self.torchvision_io = tvio
+                self.use_decord = False
+            except ImportError:
+                raise ImportError("Please install decord for video loading: pip install decord")
             else:
-                print(f"Warning: episode_type column not found, loading all episodes")
+                self.use_decord = False
         
-        # Build episode indices
-        self.episode_indices = self._build_episode_indices()
+        # Load metadata
+        self.metadata = self._load_metadata()
         
-    def _build_episode_indices(self):
-        """Build indices for episode boundaries."""
-        indices = []
-        current_episode = []
+        # Discover episode files
+        self.episode_files = self._discover_episodes()
         
-        # Lerobot v3 uses episode_id or index to group steps
-        if "episode_index" in self.data.column_names:
-            episode_ids = self.data["episode_index"]
-        elif "episode_id" in self.data.column_names:
-            episode_ids = self.data["episode_id"]
+        # Filter by episode type
+        if episode_type != "all":
+            self.episode_files = [
+                ep_file for ep_file in self.episode_files
+                if self._get_episode_type(ep_file) == episode_type
+            ]
+        
+        if len(self.episode_files) == 0:
+            raise ValueError(f"No episodes found for type '{episode_type}' in {dataset_path}")
+    
+    def _load_metadata(self) -> Dict:
+        """Load metadata from meta/episodes.jsonl."""
+        metadata_path = self.dataset_path / "meta" / "episodes.jsonl"
+        metadata = {}
+        
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        ep_meta = json.loads(line)
+                        # Use episode index or id as key
+                        key = ep_meta.get("episode_index") or ep_meta.get("episode_id") or ep_meta.get("index")
+                        if key is not None:
+                            metadata[str(key)] = ep_meta
+        
+        return metadata
+    
+    def _discover_episodes(self) -> List[Path]:
+        """Discover all episode parquet files in data/chunk-*/."""
+        data_dir = self.dataset_path / "data" / self.chunk_id
+        
+        if not data_dir.exists():
+            raise ValueError(f"Data directory not found: {data_dir}")
+        
+        # Find all episode parquet files
+        episode_files = sorted(data_dir.glob("episode_*.parquet"))
+        
+        if len(episode_files) == 0:
+            raise ValueError(f"No episode files found in {data_dir}")
+        
+        return episode_files
+    
+    def _get_episode_type(self, episode_file: Path) -> str:
+        """Get episode type from metadata or filename."""
+        # Extract episode index from filename (e.g., episode_000000.parquet -> 000000)
+        match = re.search(r'episode_(\d+)', episode_file.name)
+        if match:
+            ep_idx = match.group(1)
+            if ep_idx in self.metadata:
+                return self.metadata[ep_idx].get("episode_type", "all")
+        
+        return "all"
+    
+    def _load_parquet_episode(self, episode_file: Path) -> Dict:
+        """Load episode data from parquet file."""
+        df = self.pd.read_parquet(episode_file)
+        
+        # Limit episode length if specified
+        if self.max_episode_length and len(df) > self.max_episode_length:
+            df = df.head(self.max_episode_length)
+        
+        return df
+    
+    def _load_video_frames(self, video_path: Path, num_frames: int) -> torch.Tensor:
+        """Load frames from MP4 video file."""
+        if not video_path.exists():
+            raise FileNotFoundError(f"Video file not found: {video_path}")
+        
+        if self.use_decord:
+            # Using decord for faster video loading
+            vr = self.decord.VideoReader(str(video_path), ctx=self.decord.cpu(0))
+            total_frames = len(vr)
+            
+            # Sample frames evenly
+            if num_frames > total_frames:
+                frame_indices = list(range(total_frames))
+            else:
+                frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+            
+            frames = []
+            for idx in frame_indices:
+                frame = vr[idx].asnumpy()  # Convert to numpy
+                frames.append(frame)
+            
+            # Convert to tensor: (T, H, W, C) -> (T, C, H, W)
+            frames = np.stack(frames)
+            frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
         else:
-            # Assume sequential episodes based on done flags
-            done_flags = self.data[self.done_key] if self.done_key in self.data.column_names else None
-            if done_flags is None:
-                # No episode structure, treat as single episode
-                return [(0, len(self.data))]
-            episode_ids = []
-            current_id = 0
-            for done in done_flags:
-                episode_ids.append(current_id)
-                if done:
-                    current_id += 1
+            # Fallback to torchvision VideoReader
+            video, audio, info = self.torchvision_io.read_video(str(video_path), output_format="TCHW")
+            
+            # Sample frames
+            total_frames = video.shape[0]
+            if num_frames > total_frames:
+                frame_indices = list(range(total_frames))
+            else:
+                frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+            
+            frames = video[frame_indices].float() / 255.0
         
-        # Group by episode
-        episodes = {}
-        for idx, ep_id in enumerate(episode_ids):
-            if ep_id not in episodes:
-                episodes[ep_id] = []
-            episodes[ep_id].append(idx)
+        return frames
+    
+    def _find_video_path(self, episode_idx: str, image_key: str) -> Optional[Path]:
+        """Find video file path for given episode and image key."""
+        # Convert image key to video directory name
+        # e.g., "observation.images.main" -> "observation.images.main"
+        video_dir = self.dataset_path / "videos" / self.chunk_id / image_key
         
-        # Create (start, end) indices for each episode
-        indices = []
-        for ep_id, indices_list in sorted(episodes.items()):
-            start = min(indices_list)
-            end = max(indices_list) + 1
-            if self.max_episode_length:
-                end = min(end, start + self.max_episode_length)
-            indices.append((start, end))
+        if not video_dir.exists():
+            return None
         
-        return indices
+        # Find matching video file
+        video_file = video_dir / f"episode_{episode_idx}.mp4"
+        if video_file.exists():
+            return video_file
+        
+        return None
     
     def __len__(self):
-        return len(self.episode_indices)
+        return len(self.episode_files)
     
     def __getitem__(self, idx):
         """Get a single episode."""
-        start_idx, end_idx = self.episode_indices[idx]
+        episode_file = self.episode_files[idx]
         
-        # Extract episode data
-        episode_data = self.data.select(range(start_idx, end_idx))
+        # Extract episode index from filename
+        match = re.search(r'episode_(\d+)', episode_file.name)
+        episode_idx = match.group(1) if match else str(idx).zfill(6)
         
-        # Get images
+        # Load episode data from parquet
+        df = self._load_parquet_episode(episode_file)
+        num_steps = len(df)
+        
+        # Load images from videos
         images = {}
-        for key in self.image_keys:
-            if key in episode_data.column_names:
-                img_list = episode_data[key]
-                # Convert PIL images to numpy/torch if needed
-                if isinstance(img_list[0], np.ndarray):
-                    images[key] = torch.from_numpy(np.stack(img_list))
-                else:
-                    # Assume PIL Image, convert to tensor
-                    import torchvision.transforms as T
-                    to_tensor = T.ToTensor()
-                    images[key] = torch.stack([to_tensor(img) for img in img_list])
-                    if self.transform:
-                        images[key] = self.transform(images[key])
+        for image_key in self.image_keys:
+            video_path = self._find_video_path(episode_idx, image_key)
+            if video_path:
+                video_frames = self._load_video_frames(video_path, num_steps)
+                if self.transform:
+                    video_frames = self.transform(video_frames)
+                images[image_key] = video_frames
+            else:
+                # Try loading from parquet if video not found
+                if image_key in df.columns:
+                    # If images are stored in parquet (less common)
+                    img_data = df[image_key].values
+                    if len(img_data) > 0 and img_data[0] is not None:
+                        # Convert PIL/numpy images to tensor
+                        import torchvision.transforms as T
+                        to_tensor = T.ToTensor()
+                        frames = []
+                        for img in img_data:
+                            if hasattr(img, 'numpy'):
+                                img = img.numpy()
+                            frames.append(to_tensor(img))
+                        images[image_key] = torch.stack(frames)
         
         # Get text instructions
         text = None
-        if self.text_key in episode_data.column_names:
-            text_list = episode_data[self.text_key]
-            # Use first instruction if multiple
-            text = text_list[0] if isinstance(text_list[0], str) else str(text_list[0])
+        if self.text_key in df.columns:
+            text_values = df[self.text_key].values
+            # Use first non-null text if available
+            for txt in text_values:
+                if txt is not None and str(txt).strip():
+                    text = str(txt)
+                    break
         
         # Get actions
         actions = None
-        if self.action_key in episode_data.column_names:
-            action_list = episode_data[self.action_key]
-            if isinstance(action_list[0], (list, np.ndarray)):
-                actions = torch.from_numpy(np.array(action_list)).float()
-            else:
-                actions = torch.tensor(action_list).float()
+        if self.action_key in df.columns:
+            action_data = df[self.action_key].values
+            if len(action_data) > 0:
+                # Handle nested lists/arrays
+                if isinstance(action_data[0], (list, np.ndarray)):
+                    actions = torch.from_numpy(np.array([np.array(a) for a in action_data])).float()
+                else:
+                    actions = torch.from_numpy(np.array(action_data)).float()
         
         # Get rewards
         rewards = None
-        if self.reward_key in episode_data.column_names:
-            reward_list = episode_data[self.reward_key]
-            rewards = torch.tensor(reward_list).float()
+        if self.reward_key in df.columns:
+            reward_data = df[self.reward_key].values
+            rewards = torch.from_numpy(np.array(reward_data)).float()
         
         # Get done flags
         done = None
-        if self.done_key in episode_data.column_names:
-            done_list = episode_data[self.done_key]
-            done = torch.tensor(done_list).bool()
+        if self.done_key in df.columns:
+            done_data = df[self.done_key].values
+            done = torch.from_numpy(np.array(done_data)).bool()
         
         # Get advantages if available
         advantages = None
-        if self.advantage_key and self.advantage_key in episode_data.column_names:
-            adv_list = episode_data[self.advantage_key]
-            advantages = torch.tensor(adv_list).float()
+        if self.advantage_key and self.advantage_key in df.columns:
+            adv_data = df[self.advantage_key].values
+            advantages = torch.from_numpy(np.array(adv_data)).float()
         
         # Get episode metadata
         metadata = {
             "episode_index": idx,
-            "episode_length": end_idx - start_idx,
+            "episode_id": episode_idx,
+            "episode_length": num_steps,
         }
-        if "episode_type" in episode_data.column_names:
-            metadata["episode_type"] = episode_data["episode_type"][0]
+        
+        if episode_idx in self.metadata:
+            ep_meta = self.metadata[episode_idx]
+            metadata["episode_type"] = ep_meta.get("episode_type", "all")
+            metadata.update(ep_meta)
         
         return {
             "images": images,
@@ -209,12 +325,31 @@ class LerobotDatasetV3(Dataset):
             "metadata": metadata,
         }
     
+    def _pad_tensor(self, tensor: torch.Tensor, target_length: int, dim: int = 0) -> torch.Tensor:
+        """Pad tensor to target length."""
+        current_length = tensor.shape[dim]
+        if current_length >= target_length:
+            return tensor[:target_length]
+        
+        pad_size = target_length - current_length
+        pad_shape = list(tensor.shape)
+        pad_shape[dim] = pad_size
+        
+        if dim == 0:
+            padding = torch.zeros(pad_shape, dtype=tensor.dtype, device=tensor.device)
+            return torch.cat([tensor, padding], dim=dim)
+        else:
+            raise NotImplementedError(f"Padding on dim {dim} not implemented")
+    
     def get_batch(self, indices: List[int]) -> Dict:
         """Get a batch of episodes."""
         batch = [self[i] for i in indices]
         
         # Pad sequences to same length
-        max_length = max(len(item["actions"]) for item in batch if item["actions"] is not None)
+        max_length = max(
+            len(item["actions"]) if item["actions"] is not None else 0
+            for item in batch
+        )
         
         padded_batch = {}
         for key in ["images", "actions", "rewards", "done", "advantages"]:
@@ -244,22 +379,6 @@ class LerobotDatasetV3(Dataset):
         padded_batch["metadata"] = [item["metadata"] for item in batch]
         
         return padded_batch
-    
-    def _pad_tensor(self, tensor: torch.Tensor, target_length: int, dim: int = 0) -> torch.Tensor:
-        """Pad tensor to target length."""
-        current_length = tensor.shape[dim]
-        if current_length >= target_length:
-            return tensor[:target_length]
-        
-        pad_size = target_length - current_length
-        pad_shape = list(tensor.shape)
-        pad_shape[dim] = pad_size
-        
-        if dim == 0:
-            padding = torch.zeros(pad_shape, dtype=tensor.dtype, device=tensor.device)
-            return torch.cat([tensor, padding], dim=dim)
-        else:
-            raise NotImplementedError(f"Padding on dim {dim} not implemented")
 
 
 def create_dataloader(
@@ -270,8 +389,8 @@ def create_dataloader(
     num_workers: int = 0,
     **dataset_kwargs,
 ) -> DataLoader:
-    """Create a DataLoader for Lerobot v3 dataset."""
-    dataset = LerobotDatasetV3(dataset_path, episode_type=episode_type, **dataset_kwargs)
+    """Create a DataLoader for Lerobot v2.1 dataset."""
+    dataset = LerobotDatasetV21(dataset_path, episode_type=episode_type, **dataset_kwargs)
     
     def collate_fn(batch):
         """Custom collate function for episodes."""
@@ -318,4 +437,3 @@ def create_dataloader(
         num_workers=num_workers,
         collate_fn=collate_fn,
     )
-

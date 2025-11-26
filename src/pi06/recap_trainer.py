@@ -18,7 +18,7 @@ import wandb
 
 from .vla_model import VLAModel, TokenizerWrapper
 from .value_function import ValueFunction, compute_advantages, compute_returns
-from .dataset import LerobotDatasetV3
+from .dataset import LerobotDatasetV21
 
 
 class RecapTrainer:

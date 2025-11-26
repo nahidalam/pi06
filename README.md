@@ -18,7 +18,7 @@ The key innovation is using a value function for credit assignment and condition
 
 ## What it contains 
 
-- Lerobot dataset v3 format support
+- Lerobot dataset v2.1 format support
 - Configurable HuggingFace tokenizers for text
 - Configurable CLIP ViT tokenizers for vision
 - Advantage-conditioned policy training
@@ -52,13 +52,23 @@ The following steps have been tested with `CUDA Version: 12.4`.
 
 ### Training
 
-1. Prepare your Lerobot v3 dataset (or use an existing one)
+1. Prepare your Lerobot v2.1 dataset (or use an existing one)
+   
+   The dataset should follow the Lerobot v2.1 format:
+   ```
+   <dataset_name>/
+   ├── data/chunk-000/episode_*.parquet
+   ├── videos/chunk-000/observation.images.*/episode_*.mp4
+   └── meta/episodes.jsonl
+   ```
 
 2. Create/edit the config file (`src/pi06/configs/recap_config.yaml`):
    ```yaml
    dataset:
-     path: "path/to/your/dataset"
+     path: "path/to/lerobot/dataset"  # Path to dataset root directory
      batch_size: 1
+     chunk_id: "chunk-000"  # Chunk identifier
+     image_keys: ["observation.images.main"]  # Camera keys
    
    model:
      action_dim: 7  # Adjust for your robot
@@ -133,10 +143,21 @@ Resume training with:
 python -m pi06.train --config src/pi06/configs/recap_config.yaml --checkpoint checkpoints/checkpoint_demo.pt
 ```
 
+## Dataset Format
+
+The implementation expects Lerobot v2.1 format with the following structure:
+
+- **Data**: Episode data stored as parquet files in `data/chunk-*/episode_*.parquet`
+- **Videos**: MP4 video files in `videos/chunk-*/observation.images.*/episode_*.mp4`
+- **Metadata**: Episode metadata in `meta/episodes.jsonl`
+- **Supports**: Multiple camera views, episode type filtering (demo/correction/autonomous)
+
+See [Lerobot documentation](https://huggingface.co/docs/lerobot) for details on the v2.1 format.
+
 ## References
 
 - [π*0.6 Blog Post](https://www.physicalintelligence.company/blog/pistar06)
-- [Lerobot Dataset v3](https://huggingface.co/docs/lerobot/en/lerobot-dataset-v3)
+- [Lerobot Documentation](https://huggingface.co/docs/lerobot)
 - [CLIP](https://github.com/openai/CLIP)
 - [HuggingFace Transformers](https://huggingface.co/docs/transformers)
 

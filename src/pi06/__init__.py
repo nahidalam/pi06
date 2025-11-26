@@ -3,7 +3,7 @@
 from .vla_model import VLAModel, TokenizerWrapper
 from .value_function import ValueFunction, compute_advantages, compute_returns
 from .recap_trainer import RecapTrainer
-from .dataset import LerobotDatasetV3, create_dataloader
+from .dataset import LerobotDatasetV21, create_dataloader
 
 __all__ = [
     "VLAModel",
@@ -12,7 +12,7 @@ __all__ = [
     "compute_advantages",
     "compute_returns",
     "RecapTrainer",
-    "LerobotDatasetV3",
+    "LerobotDatasetV21",
     "create_dataloader",
 ]
 

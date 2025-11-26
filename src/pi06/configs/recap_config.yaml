@@ -24,12 +24,13 @@ value_function:
   output_type: "scalar"  # "scalar" or "distribution"
   num_bins: 255  # Only used if output_type is "distribution"
 
-# Dataset configuration
+# Dataset configuration - Lerobot v2.1 format
 dataset:
-  path: "Grigorij/shooting_watermelon_v3.0"  # Path to Lerobot v3 dataset
+  path: "path/to/lerobot/dataset"  # Path to Lerobot v2.1 dataset root directory
   batch_size: 1  # Usually 1 for episodes, but can batch multiple
   num_workers: 0
-  image_keys: ["image"]  # List of image observation keys
+  chunk_id: "chunk-000"  # Chunk identifier (default: "chunk-000")
+  image_keys: ["observation.images.main"]  # List of image observation keys (e.g., ["observation.images.main", "observation.images.secondary_0"])
   text_key: "instruction"
   action_key: "action"
   reward_key: "reward"
