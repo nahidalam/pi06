@@ -26,7 +26,7 @@ value_function:
 
 # Dataset configuration
 dataset:
-  path: "path/to/lerobot/dataset"  # Path to Lerobot v3 dataset
+  path: "Grigorij/shooting_watermelon_v3.0"  # Path to Lerobot v3 dataset
   batch_size: 1  # Usually 1 for episodes, but can batch multiple
   num_workers: 0
   image_keys: ["image"]  # List of image observation keys
